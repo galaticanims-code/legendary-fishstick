@@ -1,0 +1,66 @@
+name: macOS-RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-remote:
+    runs-on: macos-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: Enable Remote Management (VNC) and Create User
+        run: |
+          # Enable screen sharing (VNC)
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -activate -configure -access -on \
+            -users admin \
+            -privs -all \
+            -restart -agent -menu
+
+          # Create a local user for remote access
+          USERNAME="remote"
+          PASSWORD=$(openssl rand -base64 16)
+          sudo sysadminctl -addUser "$USERNAME" -password "$PASSWORD"
+          sudo dscl . -append /Groups/admin GroupMembership "$USERNAME"
+
+          echo "RDP_CREDS=User: $USERNAME | Password: $PASSWORD" >> $GITHUB_ENV
+
+      - name: Install Tailscale
+        run: |
+          TS_URL="https://pkgs.tailscale.com/stable/tailscale-1.82.0.pkg"
+          curl -fsSL "$TS_URL" -o /tmp/tailscale.pkg
+          sudo installer -pkg /tmp/tailscale.pkg -target /
+          rm /tmp/tailscale.pkg
+
+      - name: Connect Tailscale
+        run: |
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-macos-${GITHUB_RUN_ID}
+
+          # Wait for IP assignment
+          for i in {1..10}; do
+            IP=$(tailscale ip -4 | head -n 1)
+            if [ -n "$IP" ]; then break; fi
+            sleep 5
+          done
+
+          if [ -z "$IP" ]; then
+            echo "Tailscale IP not found" >&2
+            exit 1
+          fi
+          echo "TAILSCALE_IP=$IP" >> $GITHUB_ENV
+
+      - name: Display Connection Info
+        run: |
+          echo "===== macOS Remote Access Info ====="
+          echo "Tailscale IP: $TAILSCALE_IP"
+          echo "Username: remote"
+          echo "Password: (hidden)"
+          echo "===================================="
+
+      - name: Keep Session Active
+        run: |
+          while true; do
+            echo "[$(date)] macOS Remote session active..."
+            sleep 300
+          done
